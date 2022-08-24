@@ -17,6 +17,8 @@ package raft
 import (
 	"errors"
 
+	"github.com/pingcap-incubator/tinykv/log"
+
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -31,6 +33,10 @@ var ErrStepPeerNotFound = errors.New("raft: cannot step as peer not found")
 type SoftState struct {
 	Lead      uint64
 	RaftState StateType
+}
+
+func isSoftStateEqual(a, b SoftState) bool {
+	return a.Lead == b.Lead && a.RaftState == b.RaftState
 }
 
 // Ready encapsulates the entries and messages that are ready to read,
@@ -70,12 +76,29 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	prevSoftState *SoftState
+	prevHardState pb.HardState
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	// log.Debugf("%d creating a new raw node", config.ID)
+	r := newRaft(config)
+	softState := SoftState{
+		Lead:      r.Lead,
+		RaftState: r.State,
+	}
+	hardState := pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
+	}
+	return &RawNode{
+		Raft:          r,
+		prevSoftState: &softState,
+		prevHardState: hardState,
+	}, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -85,6 +108,7 @@ func (rn *RawNode) Tick() {
 
 // Campaign causes this RawNode to transition to candidate state.
 func (rn *RawNode) Campaign() error {
+	log.Debugf("%d starts compaign ", rn.Raft.id)
 	return rn.Raft.Step(pb.Message{
 		MsgType: pb.MessageType_MsgHup,
 	})
@@ -105,6 +129,7 @@ func (rn *RawNode) ProposeConfChange(cc pb.ConfChange) error {
 	if err != nil {
 		return err
 	}
+	// log.Infof("remove: Lead: %d, PeerId: %d", rn.Raft.Lead, rn.Raft.id)
 	ent := pb.Entry{EntryType: pb.EntryType_EntryConfChange, Data: data}
 	return rn.Raft.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
@@ -143,19 +168,62 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	return Ready{}
+	softState := &SoftState{
+		Lead:      rn.Raft.Lead,
+		RaftState: rn.Raft.State,
+	}
+	hardState := pb.HardState{
+		Term:   rn.Raft.Term,
+		Vote:   rn.Raft.Vote,
+		Commit: rn.Raft.RaftLog.committed,
+	}
+	if isSoftStateEqual(*softState, *rn.prevSoftState) {
+		softState = nil
+	}
+	if isHardStateEqual(hardState, rn.prevHardState) {
+		hardState = pb.HardState{}
+	}
+	// log.Infof("id: %d, Lead: %d", rn.Raft.id, rn.Raft.Lead)
+	entries := rn.Raft.RaftLog.unstableEntries()
+	committedEntries := rn.Raft.RaftLog.nextEnts()
+	msgs := rn.Raft.msgs
+	rn.Raft.msgs = []pb.Message{}
+	return Ready{
+		SoftState:        softState,
+		HardState:        hardState,
+		Entries:          entries,
+		CommittedEntries: committedEntries,
+		Messages:         msgs,
+		Snapshot:         *rn.Raft.RaftLog.pendingSnapshot,
+	}
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	return false
+	if len(rn.Raft.msgs) == 0 && len(rn.Raft.RaftLog.nextEnts()) == 0 && len(rn.Raft.RaftLog.unstableEntries()) == 0 {
+		return false
+	}
+	return true
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	rn.Raft.RaftLog.pendingSnapshot = &pb.Snapshot{}
+	firstIndexOfStorage, _ := rn.Raft.RaftLog.storage.FirstIndex()
+	if rn.Raft.RaftLog.firstIndex < firstIndexOfStorage {
+		rn.Raft.RaftLog.maybeCompact()
+	}
+	if len(rd.Entries) > 0 {
+		if rd.Entries[len(rd.Entries)-1].Index > rn.Raft.RaftLog.stabled {
+			rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+		}
+	}
+	if len(rd.CommittedEntries) > 0 {
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+	}
 }
 
 // GetProgress return the Progress of this node and its peers, if this

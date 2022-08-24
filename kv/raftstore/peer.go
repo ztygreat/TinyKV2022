@@ -222,7 +222,6 @@ func (p *peer) Destroy(engine *engine_util.Engines, keepData bool) error {
 		// will be cleared by a newer snapshot applying or restart.
 		p.peerStorage.ClearData()
 	}
-
 	for _, proposal := range p.proposals {
 		NotifyReqRegionRemoved(region.Id, proposal.cb)
 	}

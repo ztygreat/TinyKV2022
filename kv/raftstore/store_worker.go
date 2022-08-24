@@ -143,8 +143,8 @@ func (d *storeWorker) checkMsg(msg *rspb.RaftMessage) (bool, error) {
 		return true, nil
 	}
 	if fromEpoch.ConfVer == regionEpoch.ConfVer {
-		return false, errors.Errorf("tombstone peer [epoch: %s] received an invalid message %s, ignore it",
-			regionEpoch, msgType)
+		return false, errors.Errorf("tombstone peer [epoch: %s] received an invalid message %s, ignore it, msg.From: %d, msg.To: %d",
+			regionEpoch, msgType, msg.FromPeer.Id, msg.ToPeer.Id)
 	}
 	return false, nil
 }
@@ -210,7 +210,8 @@ func (d *storeWorker) maybeCreatePeer(regionID uint64, msg *rspb.RaftMessage) (b
 		StartKey: msg.StartKey,
 		EndKey:   msg.EndKey,
 	}) {
-		log.Debugf("msg %s is overlapped with exist region %s", msg, region)
+		// log.Debugf("msg %s is overlapped with exist region %s", msg, region)
+		log.Infof("msg %s is overlapped with exist region %s", msg, region)
 		if util.IsFirstVoteMessage(msg.Message) {
 			meta.pendingVotes = append(meta.pendingVotes, msg)
 		}
